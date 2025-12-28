@@ -1,6 +1,7 @@
 from pyrogram import filters
 from Oneforall import app
-from Oneforall.vclogger import VC_LOGGER
+from Oneforall.vc_listener import VC_LOGGER
+
 
 @app.on_message(filters.command("vclogger") & filters.group)
 async def vclogger_handler(_, message):
@@ -15,9 +16,11 @@ async def vclogger_handler(_, message):
     if option == "on":
         VC_LOGGER.add(chat_id)
         await message.reply_text("✅ **VC Logger Enabled**")
+
     elif option == "off":
         VC_LOGGER.discard(chat_id)
         await message.reply_text("❌ **VC Logger Disabled**")
+
 
 @app.on_message(filters.command("vcstatus") & filters.group)
 async def vcstatus(_, message):
