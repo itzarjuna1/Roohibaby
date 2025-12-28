@@ -45,3 +45,6 @@ async def fake_vc_join(client, message):
 ACTION : IGNORED
 """
         )
+
+def attach():
+    pass
