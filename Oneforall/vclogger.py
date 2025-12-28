@@ -23,6 +23,6 @@ async def vc_join_listener(client, update, users, chats):
                 f"""#JoinVideoChat
 👤 **Name** : {user.first_name}
 🆔 **ID** : `{user.id}`
-⚡ **Action** : Ignored [Auth]
+🔗 **Username** : @{user.username if user.username else 'Ignored'}
 """
             )
