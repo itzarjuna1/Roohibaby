@@ -4,7 +4,6 @@ from Oneforall import app
 VC_LOGGER = set()
 
 
-# /vclogger on | off
 @app.on_message(filters.command("vclogger") & filters.group)
 async def vclogger_handler(_, message):
     if len(message.command) < 2:
@@ -23,21 +22,23 @@ async def vclogger_handler(_, message):
         await message.reply_text("❌ VC Logger Disabled")
 
 
-# 🔥 SERVICE MESSAGE LISTENER
-@app.on_message(filters.service & filters.group)
-async def vc_service_logger(_, message):
-    chat_id = message.chat.id
-    if chat_id not in VC_LOGGER:
+# 🔥 VC START
+@app.on_message(filters.video_chat_started & filters.group)
+async def vc_started(_, message):
+    if message.chat.id not in VC_LOGGER:
         return
 
-    text = message.text or ""
+    await message.reply_text("🎧 **Video Chat Started**")
 
-    # INVITE / JOIN detect
-    if "video chat" in text.lower():
-        user = message.from_user
-        if not user:
-            return
 
+# 🔥 VC INVITE (THIS IS WHAT YOU WANT)
+@app.on_message(filters.video_chat_members_invited & filters.group)
+async def vc_invite(_, message):
+    if message.chat.id not in VC_LOGGER:
+        return
+
+    invited = message.video_chat_members_invited.users
+    for user in invited:
         await message.reply_text(
             f"""🤖 **ROOHI VC LOGGER**
 
@@ -45,5 +46,6 @@ async def vc_service_logger(_, message):
 👤 NAME : {user.first_name}
 🆔 ID : `{user.id}`
 🔗 USER : @{user.username if user.username else "None"}
+ACTION : IGNORED
 """
         )
