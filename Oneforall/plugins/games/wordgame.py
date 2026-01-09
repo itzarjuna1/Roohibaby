@@ -8,7 +8,7 @@ import os
 # WORD LIST
 # ======================
 
-BASE_DIR = os.path.dirname(os.path.dirname(__file__))
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 FILE_PATH = os.path.join(BASE_DIR, "words.txt")
 
 with open(FILE_PATH, "r") as f:
