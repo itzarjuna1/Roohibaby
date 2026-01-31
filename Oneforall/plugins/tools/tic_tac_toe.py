@@ -1,151 +1,244 @@
-# ─────────────────────────────────────────────
-# Tic Tac Toe (XOXO) Game
-# Friend vs Friend & Friend vs Bot
-# ─────────────────────────────────────────────
-
+import asyncio
+from time import time
 from pyrogram import filters
-from pyrogram.types import Message
+from pyrogram.types import (
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    CallbackQuery,
+    Message
+)
 from Oneforall import app
+from Oneforall.core.mongo import mongodb
 
-games = {}  # chat_id -> game state
+games = {}
+xoxo_db = mongodb.xoxo_leaderboard
+
+EMPTY = "⬜"
+X = "❌"
+O = "⭕"
+TIMEOUT = 60  # seconds
 
 WIN = [
     [0,1,2],[3,4,5],[6,7,8],
-    [0,3,6],[1,4,7],[2,5,8],
-    [0,4,8],[2,4,6]
+    [0,3,6],[1,4,7],[2,5,8]
 ]
 
-def render(board):
-    return "\n".join([
-        " | ".join(board[i:i+3]) for i in range(0,9,3)
-    ])
+# ───── HELPERS ─────
 
-def check_winner(board):
+def check(board):
     for a,b,c in WIN:
-        if board[a] == board[b] == board[c] != "⬜":
+        if board[a] == board[b] == board[c] != EMPTY:
             return board[a]
-    if "⬜" not in board:
+    if EMPTY not in board:
         return "draw"
     return None
 
-# ───────── START GAME ─────────
+def smart_bot(board):
+    for i in range(9):
+        if board[i] == EMPTY:
+            board[i] = O
+            if check(board) == O:
+                return i
+            board[i] = EMPTY
+    for i in range(9):
+        if board[i] == EMPTY:
+            board[i] = X
+            if check(board) == X:
+                board[i] = EMPTY
+                return i
+            board[i] = EMPTY
+    if board[4] == EMPTY:
+        return 4
+    for i in range(9):
+        if board[i] == EMPTY:
+            return i
 
-@app.on_message(filters.command("tictactoe", prefixes=["/", "!", "."]))
-async def start_game(_, m: Message):
-    args = m.text.split()
+def kb(gid, board):
+    rows = []
+    for i in range(0,9,3):
+        rows.append([
+            InlineKeyboardButton(board[i], callback_data=f"xoxo:{gid}:{i}"),
+            InlineKeyboardButton(board[i+1], callback_data=f"xoxo:{gid}:{i+1}"),
+            InlineKeyboardButton(board[i+2], callback_data=f"xoxo:{gid}:{i+2}")
+        ])
+    rows.append([
+        InlineKeyboardButton("🔁 Rematch", callback_data=f"xoxo_rematch:{gid}"),
+        InlineKeyboardButton("🛑 End", callback_data=f"xoxo_end:{gid}")
+    ])
+    return InlineKeyboardMarkup(rows)
 
-    if len(args) < 2:
-        return await m.reply(
-            "**Usage:**\n"
-            "`/tictactoe bot`  → Play with bot\n"
-            "`/tictactoe friend` → Play with friend"
-        )
+async def add_win(uid):
+    await xoxo_db.update_one(
+        {"user_id": uid},
+        {"$inc": {"wins": 1}},
+        upsert=True
+    )
 
-    mode = args[1].lower()
-    chat_id = m.chat.id
+# ───── /xoxo ─────
 
-    board = ["⬜"] * 9
+@app.on_message(filters.command("xoxo"))
+async def start(_, m: Message):
+    gid = m.chat.id
+    uid = m.from_user.id
 
-    games[chat_id] = {
-        "board": board,
-        "turn": "❌",
-        "mode": mode,
-        "players": [m.from_user.id],
+    games[gid] = {
+        "board": [EMPTY]*9,
+        "p1": uid,
+        "p2": None,
+        "turn": X,
+        "mode": "friend",
+        "last": time()
     }
 
-    if mode == "friend":
-        games[chat_id]["players"].append(None)
-        await m.reply(
-            "**🎮 Tic Tac Toe Started (Friend Mode)**\n"
-            "Second player type `/join`\n\n"
-            f"{render(board)}"
-        )
-    else:
-        await m.reply(
-            "**🤖 Tic Tac Toe Started (Bot Mode)**\n\n"
-            f"{render(board)}\n\n"
-            "Use `/move 1-9`"
-        )
+    kb_start = InlineKeyboardMarkup([
+        [InlineKeyboardButton("Join Game 🎮", callback_data=f"xoxo_join:{gid}")],
+        [InlineKeyboardButton("Play vs Bot 🤖", callback_data=f"xoxo_bot:{gid}")]
+    ])
 
-# ───────── JOIN FRIEND ─────────
+    await m.reply(
+        f"❌ **Tic-Tac-Toe Challenge! ⭕**\n\n"
+        f"👤 Player 1: {m.from_user.mention}\n\n"
+        f"Choose mode:",
+        reply_markup=kb_start
+    )
 
-@app.on_message(filters.command("join", prefixes=["/", "!", "."]))
-async def join_game(_, m: Message):
-    chat_id = m.chat.id
-    game = games.get(chat_id)
+    asyncio.create_task(timeout_checker(gid))
 
-    if not game or game["mode"] != "friend":
+# ───── TIMEOUT ─────
+
+async def timeout_checker(gid):
+    while gid in games:
+        await asyncio.sleep(5)
+        g = games.get(gid)
+        if time() - g["last"] > TIMEOUT:
+            winner = g["p2"] if g["turn"] == X else g["p1"]
+            games.pop(gid, None)
+            await app.send_message(
+                gid,
+                f"⏱ **Timeout!**\nWinner: <a href='tg://user?id={winner}'>Player</a>"
+            )
+            await add_win(winner)
+
+# ───── JOIN ─────
+
+@app.on_callback_query(filters.regex("^xoxo_join"))
+async def join(_, q: CallbackQuery):
+    gid = int(q.data.split(":")[1])
+    g = games.get(gid)
+
+    if not g or g["p2"]:
+        return await q.answer("Game already started")
+
+    if q.from_user.id == g["p1"]:
+        return await q.answer("You are Player 1")
+
+    g["p2"] = q.from_user.id
+    g["last"] = time()
+
+    await q.message.edit_text(
+        f"🎮 **Game Started!**\n\n"
+        f"❌ Player 1\n"
+        f"⭕ Player 2\n\n"
+        f"**Turn:** ❌",
+        reply_markup=kb(gid, g["board"])
+    )
+
+# ───── BOT MODE ─────
+
+@app.on_callback_query(filters.regex("^xoxo_bot"))
+async def bot(_, q: CallbackQuery):
+    gid = int(q.data.split(":")[1])
+    g = games[gid]
+    g["p2"] = 0
+    g["mode"] = "bot"
+    g["last"] = time()
+
+    await q.message.edit_text(
+        f"🤖 **Bot Mode Started**\n\n"
+        f"❌ You | ⭕ Bot\n\n"
+        f"Your Turn:",
+        reply_markup=kb(gid, g["board"])
+    )
+
+# ───── MOVE ─────
+
+@app.on_callback_query(filters.regex("^xoxo:"))
+async def move(_, q: CallbackQuery):
+    _, gid, pos = q.data.split(":")
+    gid, pos = int(gid), int(pos)
+
+    g = games.get(gid)
+    if not g:
         return
 
-    if game["players"][1] is None:
-        game["players"][1] = m.from_user.id
-        await m.reply(
-            "**✅ Player Joined**\n\n"
-            f"{render(game['board'])}\n\n"
-            "❌ Turn"
-        )
+    uid = q.from_user.id
+    if g["board"][pos] != EMPTY:
+        return await q.answer("Used")
 
-# ───────── PLAYER MOVE ─────────
+    if g["turn"] == X and uid != g["p1"]:
+        return await q.answer("Not your turn")
+    if g["turn"] == O and g["mode"] == "friend" and uid != g["p2"]:
+        return await q.answer("Not your turn")
 
-@app.on_message(filters.command("move", prefixes=["/", "!", "."]))
-async def player_move(_, m: Message):
-    chat_id = m.chat.id
-    game = games.get(chat_id)
+    g["board"][pos] = g["turn"]
+    g["last"] = time()
 
-    if not game:
+    res = check(g["board"])
+    if res:
+        return await finish(q, gid, res)
+
+    g["turn"] = O
+
+    if g["mode"] == "bot":
+        bp = smart_bot(g["board"])
+        g["board"][bp] = O
+        res = check(g["board"])
+        if res:
+            return await finish(q, gid, res)
+        g["turn"] = X
+    else:
+        g["turn"] = X
+
+    await q.message.edit_text(
+        f"❌ Player 1 | ⭕ {'Bot' if g['mode']=='bot' else 'Player 2'}\n\n"
+        f"**Turn:** {g['turn']}",
+        reply_markup=kb(gid, g["board"])
+    )
+
+# ───── FINISH ─────
+
+async def finish(q, gid, res):
+    g = games.pop(gid)
+    if res != "draw":
+        winner = g["p1"] if res == X else g["p2"]
+        await add_win(winner)
+        text = f"🏆 **Winner: {res}**"
+    else:
+        text = "🤝 **Draw Match**"
+
+    await q.message.edit_text(text, reply_markup=kb(gid, g["board"]))
+
+# ───── REMATCH ─────
+
+@app.on_callback_query(filters.regex("^xoxo_rematch"))
+async def rematch(_, q):
+    gid = int(q.data.split(":")[1])
+    if gid not in games:
         return
 
-    try:
-        pos = int(m.text.split()[1]) - 1
-    except:
-        return await m.reply("Use `/move 1-9`")
+    games[gid]["board"] = [EMPTY]*9
+    games[gid]["turn"] = X
+    games[gid]["last"] = time()
 
-    if pos < 0 or pos > 8 or game["board"][pos] != "⬜":
-        return await m.reply("❌ Invalid move")
+    await q.message.edit_text(
+        "🔁 **Rematch Started**\n❌ Turn",
+        reply_markup=kb(gid, games[gid]["board"])
+    )
 
-    uid = m.from_user.id
-    turn = game["turn"]
+# ───── END ─────
 
-    # Check turn
-    if game["mode"] == "friend":
-        p1, p2 = game["players"]
-        if (turn == "❌" and uid != p1) or (turn == "⭕" and uid != p2):
-            return
-    else:
-        if uid != game["players"][0]:
-            return
-
-    game["board"][pos] = turn
-    winner = check_winner(game["board"])
-
-    if winner:
-        del games[chat_id]
-        if winner == "draw":
-            return await m.reply(f"🤝 **Draw!**\n\n{render(game['board'])}")
-        return await m.reply(f"🏆 **{winner} Wins!**\n\n{render(game['board'])}")
-
-    # Switch turn
-    game["turn"] = "⭕" if turn == "❌" else "❌"
-
-    # Bot Move
-    if game["mode"] == "bot" and game["turn"] == "⭕":
-        for i in range(9):
-            if game["board"][i] == "⬜":
-                game["board"][i] = "⭕"
-                break
-
-        winner = check_winner(game["board"])
-        if winner:
-            del games[chat_id]
-            return await m.reply(f"🏆 **{winner} Wins!**\n\n{render(game['board'])}")
-
-        game["turn"] = "❌"
-
-    await m.reply(render(game["board"]))
-
-# ───────── END GAME ─────────
-
-@app.on_message(filters.command("endgame", prefixes=["/", "!", "."]))
-async def end_game(_, m: Message):
-    if games.pop(m.chat.id, None):
-        await m.reply("🛑 **Game Ended**")
+@app.on_callback_query(filters.regex("^xoxo_end"))
+async def end(_, q):
+    gid = int(q.data.split(":")[1])
+    games.pop(gid, None)
+    await q.message.edit_text("🛑 **Game Ended**")
